@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Labyrinth Escape - Cyber Maze</title>
+<!-- Google Fonts for a retro arcade feel -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<style>
+body {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background: radial-gradient(circle at center, #2b0a3d 0%, #0d021a 100%);
+    font-family: 'VT323', monospace;
+    color: #fff;
+    overflow: hidden;
+}
+#game-container {
+    text-align: center;
+}
+canvas {
+    background-color: #000;
+    border: 4px solid #ff00ff;
+    box-shadow: 0 0 25px rgba(255, 0, 255, 0.6), inset 0 0 15px #222;
+    display: block;
+    margin: 0 auto;
+}
+h1 {
+    color: #00ffff;
+    font-size: 2.8em;
+    text-shadow: 2px 2px 0px #ff00ff;
+    margin-bottom: 5px;
+}
+.creator-tag {
+    font-size: 1.2em;
+    color: #ffff00;
+    text-shadow: 0 0 8px #ffff00;
+    margin-bottom: 15px;
+    letter-spacing: 2px;
+}
+</style>
+</head>
+<body>
+<div id="game-container">
+<h1 id="game-title">Cyber Labyrinth Escape</h1>
+<div class="creator-tag">Operated by Alex Carter</div>
+<canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+// --- Basic Setup ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- Game Configuration ---
+const GRID_SIZE = 25;
+const MAZE_WIDTH = 31;  // Odd number
+const MAZE_HEIGHT = 23; // Odd number
+canvas.width = MAZE_WIDTH * GRID_SIZE;
+canvas.height = MAZE_HEIGHT * GRID_SIZE;
+
+const colors = {
+    wall: '#1a0033',       // Dark Cyber Purple
+    path: '#0d021a',       // Near Black
+    player: '#00ffff',     // Bright Cyan
+    exitLocked: '#555555', // Grey when locked
+    exitActive: '#00ff00', // Neon Green when active
+    coin: '#ffcc00',       // Gold Coin
+    guard: '#ff0055',      // Hot Pink Guard
+    powerUp: '#00ffcc'     // Mint Time Boost
+};
+
+// --- Game State ---
+let maze, player, exit, coins, guards, powerUps;
+let gameTimer = 300; // 5 minutes
+let timerInterval;
+let gameState = 'welcome'; // 'welcome', 'playing', 'win', 'lose'
+
+// --- Helper: Get all open path cells ---
+function getOpenCells(mazeGrid) {
+    let openCells = [];
+    for (let y = 0; y < MAZE_HEIGHT; y++) {
+        for (let x = 0; x < MAZE_WIDTH; x++) {
+            // Exclude start (1,1)
+            if (mazeGrid[y][x] === 0 && !(x === 1 && y === 1)) {
+                openCells.push({ x, y });
+            }
+        }
+    }
+    return openCells;
+}
+
+// --- Maze Generation (Recursive Backtracking) ---
+function generateMaze(width, height) {
+    let mazeGrid = Array(height).fill(null).map(() => Array(width).fill(1));
+    
+    function carve(cx, cy) {
+        const directions = [[0, -2], [0, 2], [-2, 0], [2, 0]];
+        directions.sort(() => Math.random() - 0.5);
+        for (let [dx, dy] of directions) {
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (ny >= 0 && ny < height && nx >= 0 && nx < width && mazeGrid[ny][nx] === 1) {
+                mazeGrid[ny][nx] = 0;
+                mazeGrid[cy + dy / 2][cx + dx / 2] = 0;
+                carve(nx, ny);
+            }
+        }
+    }
+    
+    mazeGrid[1][1] = 0;
+    carve(1, 1);
+    
+    player = { x: 1, y: 1 };
+    exit = { x: width - 2, y: height - 2 };
+    
+    // Task 5a: Sprinkle Coins (e.g., 8 coins randomly on path cells)
+    coins = [];
+    let openCells = getOpenCells(mazeGrid);
+    openCells.sort(() => Math.random() - 0.5);
+    
+    const coinCount = Math.min(8, openCells.length);
+    for (let i = 0; i < coinCount; i++) {
+        coins.push(openCells.pop());
+    }
+
+    // Task 6c: Place Time Boost Power-Up
+    powerUps = [];
+    if (openCells.length > 0) {
+        const pCell = openCells.pop();
+        powerUps.push({ x: pCell.x, y: pCell.y, type: 'timeBoost' });
+    }
+
+    // Task 5b: Add Guards patrolling straight paths
+    guards = [];
+    // Place 3 guards on available open cells with random horizontal/vertical patrol axes
+    for (let i = 0; i < 3; i++) {
+        if (openCells.length > 0) {
+            let gCell = openCells.pop();
+            let isVertical = Math.random() < 0.5;
+            guards.push({
+                x: gCell.x,
+                y: gCell.y,
+                startX: gCell.x,
+                startY: gCell.y,
+                dx: isVertical ? 0 : 1,
+                dy: isVertical ? 1 : 0,
+                moveTimer: 0,
+                moveInterval: 25 // Speed control
+            });
+        }
+    }
+
+    return mazeGrid;
+}
+
+// --- Player Logic ---
+function movePlayer(dx, dy) {
+    if (gameState !== 'playing') return;
+    const nextX = player.x + dx;
+    const nextY = player.y + dy;
+
+    // Boundary & Wall check
+    if (nextY >= 0 && nextY < MAZE_HEIGHT && nextX >= 0 && nextX < MAZE_WIDTH) {
+        if (maze[nextY][nextX] !== 1) {
+            // Check if reaching exit
+            if (nextX === exit.x && nextY === exit.y) {
+                if (coins.length === 0) {
+                    gameState = 'win';
+                    clearInterval(timerInterval);
+                }
+                return; // Can't walk onto locked exit
+            }
+            player.x = nextX;
+            player.y = nextY;
+            checkInteractions();
+        }
+    }
+}
+
+// --- Interactions (Coins, Powerups, Guards) ---
+function checkInteractions() {
+    // Check Coins
+    coins = coins.filter(coin => {
+        if (coin.x === player.x && coin.y === player.y) {
+            return false; // Collected
+        }
+        return true;
+    });
+
+    // Check Power-ups
+    powerUps = powerUps.filter(p => {
+        if (p.x === player.x && p.y === player.y) {
+            if (p.type === 'timeBoost') {
+                gameTimer += 30; // Add 30 seconds
+            }
+            return false;
+        }
+        return true;
+    });
+}
+
+// --- Update Guards ---
+function updateGuards() {
+    if (gameState !== 'playing') return;
+
+    guards.forEach(guard => {
+        guard.moveTimer++;
+        if (guard.moveTimer >= guard.moveInterval) {
+            guard.moveTimer = 0;
+            
+            let nextX = guard.x + guard.dx;
+            let nextY = guard.y + guard.dy;
+
+            // If hitting wall or moving too far (range of 3 cells), reverse direction
+            if (
+                nextY < 0 || nextY >= MAZE_HEIGHT || nextX < 0 || nextX >= MAZE_WIDTH ||
+                maze[nextY][nextX] === 1 ||
+                Math.abs(nextX - guard.startX) > 3 || Math.abs(nextY - guard.startY) > 3
+            ) {
+                guard.dx *= -1;
+                guard.dy *= -1;
+            } else {
+                guard.x = nextX;
+                guard.y = nextY;
+            }
+        }
+
+        // Check collision with player
+        if (guard.x === player.x && guard.y === player.y) {
+            // Reset player to start position
+            player.x = 1;
+            player.y = 1;
+        }
+    });
+}
+
+// --- Game Flow & Timer ---
+function startGame() {
+    maze = generateMaze(MAZE_WIDTH, MAZE_HEIGHT);
+    gameTimer = 300;
+    gameState = 'playing';
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+        gameTimer--;
+        if (gameTimer <= 0) {
+            gameState = 'lose';
+            clearInterval(timerInterval);
+        }
+    }, 1000);
+}
+
+// --- Drawing / Rendering ---
+function drawMaze() {
+    for (let y = 0; y < MAZE_HEIGHT; y++) {
+        for (let x = 0; x < MAZE_WIDTH; x++) {
+            if (maze[y][x] === 1) {
+                ctx.fillStyle = colors.wall;
+            } else {
+                ctx.fillStyle = colors.path;
+            }
+            ctx.fillRect(x * GRID_SIZE, y * GRID_SIZE, GRID_SIZE, GRID_SIZE);
+        }
+    }
+
+    // Draw Exit (Locked vs Active)
+    ctx.fillStyle = (coins.length === 0) ? colors.exitActive : colors.exitLocked;
+    ctx.fillRect(exit.x * GRID_SIZE, exit.y * GRID_SIZE, GRID_SIZE, GRID_SIZE);
+    
+    // Draw exit border/glow indicator
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(exit.x * GRID_SIZE, exit.y * GRID_SIZE, GRID_SIZE, GRID_SIZE);
+}
+
+function drawCoins() {
+    ctx.fillStyle = colors.coin;
+    coins.forEach(coin => {
+        ctx.beginPath();
+        ctx.arc(
+            coin.x * GRID_SIZE + GRID_SIZE / 2,
+            coin.y * GRID_SIZE + GRID_SIZE / 2,
+            GRID_SIZE / 3,
+            0, Math.PI * 2
+        );
+        ctx.fill();
+    });
+}
+
+function drawPowerUps() {
+    ctx.fillStyle = colors.powerUp;
+    powerUps.forEach(p => {
+        ctx.fillRect(
+            p.x * GRID_SIZE + 6,
+            p.y * GRID_SIZE + 6,
+            GRID_SIZE - 12,
+            GRID_SIZE - 12
+        );
+    });
+}
+
+function drawGuards() {
+    ctx.fillStyle = colors.guard;
+    guards.forEach(guard => {
+        ctx.fillRect(
+            guard.x * GRID_SIZE + 4,
+            guard.y * GRID_SIZE + 4,
+            GRID_SIZE - 8,
+            GRID_SIZE - 8
+        );
+    });
+}
+
+function drawPlayer() {
+    ctx.fillStyle = colors.player;
+    ctx.beginPath();
+    ctx.arc(
+        player.x * GRID_SIZE + GRID_SIZE / 2,
+        player.y * GRID_SIZE + GRID_SIZE / 2,
+        GRID_SIZE / 2.5,
+        0, Math.PI * 2
+    );
+    ctx.fill();
+}
+
+function drawUI() {
+    const minutes = Math.floor(gameTimer / 60);
+    const seconds = gameTimer % 60;
+    const timeString = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    
+    ctx.fillStyle = '#fff';
+    ctx.font = '26px VT323';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Time: ${timeString}`, 20, 30);
+    
+    ctx.textAlign = 'right';
+    ctx.fillStyle = coins.length === 0 ? '#00ff00' : '#ffcc00';
+    ctx.fillText(`Coins Left: ${coins.length}`, canvas.width - 20, 30);
+}
+
+function drawScreen(title, subtitle, color) {
+    ctx.fillStyle = 'rgba(10, 2, 26, 0.9)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.font = '75px VT323';
+    ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 40);
+    
+    ctx.fillStyle = '#fff';
+    ctx.font = '35px VT323';
+    ctx.fillText(subtitle, canvas.width / 2, canvas.height / 2 + 40);
+}
+
+// --- Main Game Loop ---
+function gameLoop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (gameState === 'welcome') {
+        drawScreen('CYBER LABYRINTH', 'Click Anywhere to Start', '#00ffff');
+    } else if (gameState === 'playing') {
+        updateGuards();
+        drawMaze();
+        drawCoins();
+        drawPowerUps();
+        drawGuards();
+        drawPlayer();
+        drawUI();
+    } else if (gameState === 'win') {
+        drawScreen('MISSION ACCOMPLISHED!', 'Click to Play Again', '#00ff00');
+    } else if (gameState === 'lose') {
+        drawScreen('SYSTEM FAILURE (TIME OUT)', 'Click to Try Again', '#ff0000');
+    }
+
+    requestAnimationFrame(gameLoop);
+}
+
+// --- Event Listeners ---
+window.addEventListener('keydown', (e) => {
+    switch (e.key) {
+        case 'ArrowUp': movePlayer(0, -1); e.preventDefault(); break;
+        case 'ArrowDown': movePlayer(0, 1); e.preventDefault(); break;
+        case 'ArrowLeft': movePlayer(-1, 0); e.preventDefault(); break;
+        case 'ArrowRight': movePlayer(1, 0); e.preventDefault(); break;
+    }
+});
+
+canvas.addEventListener('click', () => {
+    if (gameState !== 'playing') {
+        startGame();
+    }
+});
+
+// Start loop
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
